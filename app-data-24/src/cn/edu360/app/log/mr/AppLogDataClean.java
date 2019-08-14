@@ -13,7 +13,11 @@ import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.mapreduce.lib.output.LazyOutputFormat;
+import org.apache.hadoop.mapreduce.lib.output.MultipleOutputs;
+import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
 
+import java.text.SimpleDateFormat;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 /*
@@ -26,8 +30,23 @@ import com.alibaba.fastjson.JSONObject;
 public class AppLogDataClean {
 
 	public static class AppLogDataCleanMapper extends Mapper<LongWritable, Text, Text, NullWritable>{
-		Text k = new Text();
-		NullWritable v = NullWritable.get(); 
+		Text k =null;
+		NullWritable v = null; 
+		SimpleDateFormat sdf=null;
+		MultipleOutputs<Text,NullWritable> mos = null;		//多路输出器
+		@Override
+		protected void setup(Mapper<LongWritable, Text, Text, NullWritable>.Context context)
+				throws IOException, InterruptedException {
+			k = new Text();
+			v = NullWritable.get();
+			sdf=new SimpleDateFormat("yyyy-mm-dd HH:mm:ss");
+			mos = new MultipleOutputs<Text,NullWritable>(context);
+			
+		
+		}
+		
+		
+		
 		
 		@Override
 		protected void map(LongWritable key, Text value, Mapper<LongWritable, Text, Text, NullWritable>.Context context)
@@ -35,7 +54,8 @@ public class AppLogDataClean {
 			//理解成hashmap
 			JSONObject jsonObj = JSON.parseObject(value.toString());
 			JSONObject headerObj = jsonObj.getJSONObject(GlobalConstants.HEADER);
-			String str = headerObj.getString("carrier");
+			
+			
 			/**
 			 * 过滤缺失必选字段的记录
 			 */
@@ -51,6 +71,11 @@ public class AppLogDataClean {
 			}
 			if (null == headerObj.getString("commit_time") || "".equals(headerObj.getString("commit_time").trim())) {
 				return;
+			}else {
+				//练习时追加的逻辑  替换掉原始数据中的时间戳
+				String commit_time = headerObj.getString("commit_time");
+				String format = sdf.format(new Date(Long.parseLong(commit_time)+38*24*60*60*1000L));
+				headerObj.put(commit_time, format);
 			}
 
 			if (null == headerObj.getString("pid") || "".equals(headerObj.getString("pid").trim())) {
@@ -134,10 +159,28 @@ public class AppLogDataClean {
 			/*
 			 * 输出结果
 			 */
+			
+			
+			
+			
 			headerObj.put("user_id", user_id);
 			k.set(JsonToStringUtil.toString(headerObj));
-			context.write(k, v);
+			if("android".equals(headerObj.getString("os_name"))){
+				mos.write(k, v, "android/android");
+			}else {
+				mos.write(k, v,"ios/ios");
+			}
+			
 		}
+		
+		@Override
+		protected void cleanup(Mapper<LongWritable, Text, Text, NullWritable>.Context context)
+				throws IOException, InterruptedException {
+
+				mos.close();
+		}
+		
+		
 	}
 	
 	
@@ -150,6 +193,8 @@ public class AppLogDataClean {
 		job.setOutputKeyClass(Text.class);
 		job.setOutputValueClass(NullWritable.class);
 		job.setNumReduceTasks(0);
+		//避免生成默认的part-m-00000等文件  因为数据已经交给MultipleOutputs输出了
+		LazyOutputFormat.setOutputFormatClass(job, TextOutputFormat.class);
 		
 		FileInputFormat.setInputPaths(job, new Path(args[0]));
 		FileOutputFormat.setOutputPath(job, new Path(args[1]));
